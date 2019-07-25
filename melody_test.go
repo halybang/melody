@@ -11,7 +11,8 @@ import (
 	"testing/quick"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 )
 
 type TestServer struct {

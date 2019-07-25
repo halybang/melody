@@ -2,10 +2,13 @@ package melody
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"sync"
 
-	"github.com/gorilla/websocket"
+	"github.com/gobwas/ws"
+	_ "github.com/gobwas/ws/wsutil"
+	_ "github.com/smallnest/epoller"
 )
 
 // Close codes defined in RFC 6455, section 11.7.
@@ -56,7 +59,7 @@ type filterFunc func(*Session) bool
 // Melody implements a websocket manager.
 type Melody struct {
 	Config                   *Config
-	Upgrader                 *websocket.Upgrader
+	Upgrader                 *ws.HTTPUpgrader
 	messageHandler           handleMessageFunc
 	messageHandlerBinary     handleMessageFunc
 	messageSentHandler       handleMessageFunc
@@ -71,12 +74,12 @@ type Melody struct {
 
 // New creates a new melody instance with default Upgrader and Config.
 func New() *Melody {
-	upgrader := &websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin:     func(r *http.Request) bool { return true },
+	upgrader := &ws.HTTPUpgrader{
+		//ReadBufferSize:  1024,
+		//WriteBufferSize: 1024,
+		//CheckOrigin:     func(r *http.Request) bool { return true },
 	}
-
+	InitPooler()
 	hub := newHub()
 
 	go hub.run()
@@ -161,13 +164,26 @@ func (m *Melody) HandleRequest(w http.ResponseWriter, r *http.Request) error {
 	return m.HandleRequestWithKeys(w, r, nil)
 }
 
+var Sessions sync.Map
+
+func GetSession(conn net.Conn) *Session {
+	var session *Session
+	if s, ok := Sessions.Load(conn); ok {
+		session, ok = s.(*Session)
+	}
+	if session == nil {
+		return nil
+	}
+	return session
+}
+
 // HandleRequestWithKeys does the same as HandleRequest but populates session.Keys with keys.
 func (m *Melody) HandleRequestWithKeys(w http.ResponseWriter, r *http.Request, keys map[string]interface{}) error {
 	if m.hub.closed() {
 		return errors.New("melody instance is closed")
 	}
 
-	conn, err := m.Upgrader.Upgrade(w, r, w.Header())
+	conn, _, _, err := m.Upgrader.Upgrade(r, w)
 
 	if err != nil {
 		return err
@@ -182,7 +198,9 @@ func (m *Melody) HandleRequestWithKeys(w http.ResponseWriter, r *http.Request, k
 		open:    true,
 		rwmutex: &sync.RWMutex{},
 	}
+	//poller.Add(conn)
 
+	Sessions.Store(conn, session)
 	m.hub.register <- session
 
 	m.connectHandler(session)
@@ -208,7 +226,7 @@ func (m *Melody) Broadcast(msg []byte) error {
 		return errors.New("melody instance is closed")
 	}
 
-	message := &envelope{t: websocket.TextMessage, msg: msg}
+	message := &envelope{t: int(ws.OpText), msg: msg}
 	m.hub.broadcast <- message
 
 	return nil
@@ -220,7 +238,7 @@ func (m *Melody) BroadcastFilter(msg []byte, fn func(*Session) bool) error {
 		return errors.New("melody instance is closed")
 	}
 
-	message := &envelope{t: websocket.TextMessage, msg: msg, filter: fn}
+	message := &envelope{t: int(ws.OpText), msg: msg, filter: fn}
 	m.hub.broadcast <- message
 
 	return nil
@@ -249,7 +267,7 @@ func (m *Melody) BroadcastBinary(msg []byte) error {
 		return errors.New("melody instance is closed")
 	}
 
-	message := &envelope{t: websocket.BinaryMessage, msg: msg}
+	message := &envelope{t: int(ws.OpBinary), msg: msg}
 	m.hub.broadcast <- message
 
 	return nil
@@ -261,7 +279,7 @@ func (m *Melody) BroadcastBinaryFilter(msg []byte, fn func(*Session) bool) error
 		return errors.New("melody instance is closed")
 	}
 
-	message := &envelope{t: websocket.BinaryMessage, msg: msg, filter: fn}
+	message := &envelope{t: int(ws.OpBinary), msg: msg, filter: fn}
 	m.hub.broadcast <- message
 
 	return nil
@@ -280,7 +298,7 @@ func (m *Melody) Close() error {
 		return errors.New("melody instance is already closed")
 	}
 
-	m.hub.exit <- &envelope{t: websocket.CloseMessage, msg: []byte{}}
+	m.hub.exit <- &envelope{t: int(ws.OpClose), msg: []byte{}}
 
 	return nil
 }
@@ -292,7 +310,7 @@ func (m *Melody) CloseWithMsg(msg []byte) error {
 		return errors.New("melody instance is already closed")
 	}
 
-	m.hub.exit <- &envelope{t: websocket.CloseMessage, msg: msg}
+	m.hub.exit <- &envelope{t: int(ws.OpClose), msg: msg}
 
 	return nil
 }
@@ -309,5 +327,16 @@ func (m *Melody) IsClosed() bool {
 
 // FormatCloseMessage formats closeCode and text as a WebSocket close message.
 func FormatCloseMessage(closeCode int, text string) []byte {
-	return websocket.FormatCloseMessage(closeCode, text)
+	//return websocket.FormatCloseMessage(closeCode, text)
+	if closeCode == 1005 /*CloseNoStatusReceived*/ {
+		// Return empty message because it's illegal to send
+		// CloseNoStatusReceived. Return non-nil value in case application
+		// checks for nil.
+		return []byte{}
+	}
+	buf := make([]byte, 2+len(text))
+	binary.BigEndian.PutUint16(buf, uint16(closeCode))
+	copy(buf[2:], text)
+	return buf
+	return nil
 }
