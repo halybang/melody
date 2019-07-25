@@ -1,14 +1,13 @@
 package melody
 
 import (
+	"encoding/binary"
 	"errors"
 	"net"
 	"net/http"
 	"sync"
 
 	"github.com/gobwas/ws"
-	_ "github.com/gobwas/ws/wsutil"
-	_ "github.com/smallnest/epoller"
 )
 
 // Close codes defined in RFC 6455, section 11.7.
@@ -79,7 +78,7 @@ func New() *Melody {
 		//WriteBufferSize: 1024,
 		//CheckOrigin:     func(r *http.Request) bool { return true },
 	}
-	InitPooler()
+	InitPool()
 	hub := newHub()
 
 	go hub.run()
@@ -183,7 +182,8 @@ func (m *Melody) HandleRequestWithKeys(w http.ResponseWriter, r *http.Request, k
 		return errors.New("melody instance is closed")
 	}
 
-	conn, _, _, err := m.Upgrader.Upgrade(r, w)
+	conn, _, _, err := ws.UpgradeHTTP(r, w)
+	// conn, _, _, err := m.Upgrader.Upgrade(r, w)
 
 	if err != nil {
 		return err
@@ -198,25 +198,32 @@ func (m *Melody) HandleRequestWithKeys(w http.ResponseWriter, r *http.Request, k
 		open:    true,
 		rwmutex: &sync.RWMutex{},
 	}
-	//poller.Add(conn)
 
 	Sessions.Store(conn, session)
-	m.hub.register <- session
+	defer Sessions.Delete(conn)
+	//adderr := AddToPool(conn)
 
-	m.connectHandler(session)
+	if false /*adderr == nil*/ {
+		for {
+		}
+	} else {
 
-	go session.writePump()
+		m.hub.register <- session
 
-	session.readPump()
+		m.connectHandler(session)
 
-	if !m.hub.closed() {
-		m.hub.unregister <- session
+		go session.writePump()
+
+		session.readPump()
+
+		if !m.hub.closed() {
+			m.hub.unregister <- session
+		}
+
+		session.close()
+
+		m.disconnectHandler(session)
 	}
-
-	session.close()
-
-	m.disconnectHandler(session)
-
 	return nil
 }
 

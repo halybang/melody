@@ -2,14 +2,14 @@ package melody
 
 import (
 	//"io"
+	"errors"
 	"log"
 	"net"
 	"sync"
 	"syscall"
 
-	"github.com/smallnest/epoller"
-	//"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"github.com/smallnest/epoller"
 )
 
 type pool struct {
@@ -98,24 +98,38 @@ func handleConn(conn net.Conn) {
 	err = wsutil.WriteServerMessage(conn, op, msg)
 	if err != nil {
 		// handle error
+		conn.Close()
+		poller.Remove(conn)
 	}
 }
 
 var poller epoller.Poller
 var workerPool *pool
 
-func InitPooler() error {
+func AddToPool(conn net.Conn) error {
+	if poller == nil {
+		return errors.New("poller is nil")
+	}
+	if err := poller.Add(conn); err != nil {
+		return err
+	}
+	return nil
+}
 
-	works := 10
-	connections := 1000000
+func InitPool() error {
+
+	works := 2
+	connections := 1000
 	workerPool = newPool(works, connections)
 	workerPool.start()
 
-	poller, err := epoller.NewPoller()
+	p, err := epoller.NewPoller()
 	if err != nil {
 		log.Fatalf("failed to create a poller %v", err)
 		return err
 	}
+
+	poller = p
 	go start(poller, true)
 	return nil
 }
